@@ -326,9 +326,13 @@ with st.sidebar:
 
 # --- Funciones de Carga y Procesamiento ---
 
-def load_data_combined(file_uploader):
-    """Carga el CSV combinado, normaliza columnas a minúsculas y agrupa."""
+# Usamos @st.cache_data para que si el archivo no cambia, el proceso sea instantáneo.
+@st.cache_data(show_spinner=False)
+def load_data_combined(file_uploader, progress_bar):
+    """Carga el CSV combinado, normaliza columnas, agrupa y actualiza progreso."""
     if file_uploader is None: return None
+    
+    progress_bar.progress(10, text="1/5: Leyendo CSV...")
     try:
         # Intento de lectura con utf-8 y luego latin-1
         try:
@@ -337,20 +341,22 @@ def load_data_combined(file_uploader):
             file_uploader.seek(0)
             df = pd.read_csv(file_uploader, encoding='latin-1')
         
+        progress_bar.progress(25, text="2/5: Normalizando columnas...")
+        
         # 1. Convertir todas las columnas a minúsculas y normalizar
         df.columns = df.columns.str.lower().str.strip().str.replace(' ', '').str.replace('á', 'a').str.replace('ó', 'o').str.replace('í', 'i').str.replace('é', 'e').str.replace('ú', 'u')
 
-        # 2. Mapeo a los nombres estandarizados en minúsculas (SOLUCIÓN A IMPRESSIONS Y POSTITION)
+        # 2. Mapeo a los nombres estandarizados en minúsculas
         column_mapping_to_standard = {
             # Query/Page
             'consultasprincipales': 'query', 'topqueries': 'query',
             'paginasprincipales': 'page', 'toppages': 'page', 'url': 'page',
             # Clicks/Impresiones
             'clics': 'clicks', 
-            'impressions': 'impresiones',       # <-- Mapea 'impressions' a 'impresiones'
+            'impressions': 'impresiones',       
             'impresion': 'impresiones', 
             # Posición
-            'postition': 'posición',          # <-- Mapea 'postition' (typo) a 'posición'
+            'postition': 'posición',          
             'position': 'posición',          
             'posicion': 'posición'        
         }
@@ -367,6 +373,8 @@ def load_data_combined(file_uploader):
         if df['ctr'].dtype == 'object':
             df['ctr'] = df['ctr'].astype(str).str.replace('%', '').str.replace(',', '.').astype(float)
             
+        progress_bar.progress(40, text="3/5: Agrupando datos (esto puede tardar)...")
+        
         # Agrupar por Page y Query para sumar métricas (columnas en minúsculas)
         df_grouped = df.groupby(['page', 'query']).agg({
             'clicks': 'sum',
@@ -375,32 +383,52 @@ def load_data_combined(file_uploader):
             'posición': 'mean'
         }).reset_index()
 
+        progress_bar.progress(50, text="4/5: Limpieza final de datos...")
+        
         return df_grouped.fillna({'clicks': 0, 'impresiones': 0, 'posición': 0, 'ctr': 0})
         
     except Exception as e:
+        progress_bar.progress(100, text="Error")
         st.error(f"Error al cargar el CSV combinado: {str(e)}")
         return None
 
-def full_processing_pipeline(df_raw, weights):
+# Usamos @st.cache_data para evitar recalcular si los datos de entrada y pesos no cambian.
+@st.cache_data(show_spinner=False)
+def full_processing_pipeline(df_raw, weights, progress_bar):
+    """Ejecuta toda la pipeline de procesamiento y scoring."""
+    
+    progress_bar.progress(55, text="5/5: 1/4 - Detectando patrones de intención...")
     # 1. Detección de patrones (Usa la columna 'query')
     df = detect_patterns(df_raw)
     
+    progress_bar.progress(70, text="5/5: 2/4 - Mapeando URLs y encontrando GAPs...")
     # 2. Mapeo de URLs (Usa las columnas 'page' y 'query')
     df = match_urls_to_queries(df)
     
+    progress_bar.progress(85, text="5/5: 3/4 - Calculando Score (Autoridad, Competencia)...")
     # 3. Cálculo de Scoring 
     df = calculate_score(df, weights)
     
+    progress_bar.progress(95, text="5/5: 4/4 - Asignando prioridades...")
     # 4. Asignar prioridad
     df['Prioridad'] = df['Score'].apply(get_priority)
     
     # 5. Marcar GAPs
     df['Es GAP'] = df['Score Contenido'] == 0
     
+    progress_bar.progress(100, text="Análisis completo.")
     return df
 
+# --- Bloque principal de carga y procesamiento ---
+
+# Placeholder para la barra de progreso
+progress_placeholder = st.empty()
+
+with progress_placeholder.container():
+    progress_bar = st.progress(0, text="Esperando la carga del archivo CSV...")
+
 # Cargar datos
-df_combined_raw = load_data_combined(combined_file)
+df_combined_raw = load_data_combined(combined_file, progress_bar)
 
 # Procesar datos si hay queries cargadas
 if df_combined_raw is not None:
@@ -411,8 +439,9 @@ if df_combined_raw is not None:
         'autoridad': peso_autoridad
     }
     
-    df_raw_processed = full_processing_pipeline(df_combined_raw, weights)
-
+    # Procesamiento completo con la misma barra de progreso
+    df_raw_processed = full_processing_pipeline(df_combined_raw, weights, progress_bar)
+    
     # LÓGICA DE FILTRADO DE MARCA
     if marca_exclude:
         terms = [t.strip().lower() for t in marca_exclude.split(',') if t.strip()]
@@ -426,9 +455,15 @@ if df_combined_raw is not None:
         df_processed = df_raw_processed.copy()
 
     st.session_state.df_processed = df_processed
+    
+    # Ocultar la barra de progreso al terminar
+    progress_placeholder.empty()
 
-# --- Visualización de resultados ---
+# --- Visualización de resultados (El resto del código sigue igual) ---
 if st.session_state.df_processed is not None:
+    # ... [Resto de las pestañas (Dashboard, Scoring, GAPs, Análisis, Exportar) ] ...
+    
+    # Contenido de las pestañas
     df = st.session_state.df_processed
     
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Dashboard", "🎯 Scoring", "🔍 GAPs", "📈 Análisis", "💾 Exportar"])
