@@ -32,7 +32,7 @@ PRIORITY_THRESHOLDS = {
     'CRÍTICA': 8, 'ALTA': 6, 'MEDIA': 4, 'BAJA': 0
 }
 
-# Nombres de columna estandarizados y en minúsculas
+# Nombres de columna estandarizados y en minúsculas (los nombres de uso interno del script)
 STANDARD_COLS = {
     'page', 'query', 'clicks', 'impresiones', 'ctr', 'posición'
 }
@@ -322,7 +322,7 @@ with st.sidebar:
     st.divider()
     
     st.markdown("### ℹ️ Cómo usar")
-    st.info("Exporta tus datos de GSC seleccionando las dimensiones **Query** y **Page** para obtener un CSV que contenga: `Page, Query, Clicks, Impressions, CTR, Position` (o sus equivalentes en español/minúsculas).")
+    st.info("Exporta tus datos de GSC seleccionando las dimensiones **Query** y **Page** para obtener un CSV que contenga: `page, query, clicks, impressions, ctr, postition`.")
 
 # --- Funciones de Carga y Procesamiento ---
 
@@ -337,17 +337,22 @@ def load_data_combined(file_uploader):
             file_uploader.seek(0)
             df = pd.read_csv(file_uploader, encoding='latin-1')
         
-        # --- SOLUCIÓN AL ERROR DE MINÚSCULAS ---
-        # 1. Convertir todas las columnas a minúsculas y normalizar espacios/acentos
+        # 1. Convertir todas las columnas a minúsculas y normalizar
         df.columns = df.columns.str.lower().str.strip().str.replace(' ', '').str.replace('á', 'a').str.replace('ó', 'o').str.replace('í', 'i').str.replace('é', 'e').str.replace('ú', 'u')
 
-        # 2. Mapeo a los nombres estandarizados en minúsculas (ej: 'clics' a 'clicks')
+        # 2. Mapeo a los nombres estandarizados en minúsculas (SOLUCIÓN A IMPRESSIONS Y POSTITION)
         column_mapping_to_standard = {
+            # Query/Page
             'consultasprincipales': 'query', 'topqueries': 'query',
             'paginasprincipales': 'page', 'toppages': 'page', 'url': 'page',
+            # Clicks/Impresiones
             'clics': 'clicks', 
-            'impresiones': 'impresiones', 
-            'posicion': 'posición', 'position': 'posición'
+            'impressions': 'impresiones',       # <-- Mapea 'impressions' a 'impresiones'
+            'impresion': 'impresiones', 
+            # Posición
+            'postition': 'posición',          # <-- Mapea 'postition' (typo) a 'posición'
+            'position': 'posición',          
+            'posicion': 'posición'        
         }
         df = df.rename(columns={k: v for k, v in column_mapping_to_standard.items() if k in df.columns})
 
@@ -437,7 +442,7 @@ if st.session_state.df_processed is not None:
         with col2: st.metric("🔴 Críticas", len(df[df['Prioridad'] == 'CRÍTICA']))
         with col3: st.metric("🟠 Altas", len(df[df['Prioridad'] == 'ALTA']))
         with col4: st.metric("⚠️ GAPs", len(df[df['Es GAP'] == True]))
-        with col5: st.metric("Total Clicks", f"{df['clicks'].sum():,}") # Usamos 'clicks' en minúsculas
+        with col5: st.metric("Total Clicks", f"{df['clicks'].sum():,}") 
         
         st.divider()
         
