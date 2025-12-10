@@ -60,7 +60,7 @@ st.markdown('<p class="sub-header">Analiza queries de GSC y prioriza contenido p
 
 # Sidebar
 with st.sidebar:
-    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/e/e5/Google_Search_Console_Logo.svg/1200px-Google_Search_Console_Logo.svg.png", width=50)
+    st.markdown("### 🔍 GEO Educa Edtech")
     st.header("📁 Cargar datos")
     
     st.markdown("### Queries GSC")
