@@ -32,6 +32,11 @@ PRIORITY_THRESHOLDS = {
     'CRÍTICA': 8, 'ALTA': 6, 'MEDIA': 4, 'BAJA': 0
 }
 
+# Nombres de columna estandarizados y en minúsculas
+STANDARD_COLS = {
+    'page', 'query', 'clicks', 'impresiones', 'ctr', 'posición'
+}
+
 # ==============================================================================
 # 💡 FUNCIONES HELPER (Lógica de Mapeo y Scoring)
 # ==============================================================================
@@ -65,24 +70,19 @@ def extract_slug(url: str) -> str:
         return ''
 
 def find_best_url_match(query: str, url_terms: dict, url_list: list) -> str:
-    """
-    Función de matching simplificada para el nuevo formato. 
-    Busca la URL más relevante entre las páginas ya asociadas a otras queries.
-    """
+    """Encuentra la URL más relevante entre las páginas ya asociadas a otras queries."""
     if not url_list: return None
     query_terms = extract_terms(query)
     if not query_terms: return None
 
     best_url = None
-    max_score = 0.5 # Umbral mínimo
+    max_score = 0.5 
     
     query_clean = ' '.join(query_terms)
     
     for url, slug in url_terms.items():
-        # Score de similitud de texto (Fuzzy)
         score = SequenceMatcher(None, query_clean, slug).ratio()
         
-        # Ponderación extra por términos exactos
         exact_matches = sum(1 for term in query_terms if term in slug)
         score += exact_matches * 0.1
         
@@ -93,29 +93,24 @@ def find_best_url_match(query: str, url_terms: dict, url_list: list) -> str:
     return best_url
 
 def match_urls_to_queries(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ajuste: Mapea queries a otras URLs del mismo dataset si hay mejor coincidencia.
-    Esto permite detectar GAPs incluso en el CSV combinado.
-    """
+    """Mapea queries a otras URLs del mismo dataset si hay mejor coincidencia."""
     df_result = df.copy()
     
-    # 1. Crear un diccionario de slugs de URLs únicas
-    unique_urls = df_result['Page'].dropna().unique().tolist()
+    # Usamos la columna 'page' normalizada
+    unique_urls = df_result['page'].dropna().unique().tolist()
     url_terms = {url: extract_slug(url) for url in unique_urls}
     
-    # 2. Mapear cada query a la mejor URL (incluso si no es la URL original de la fila)
-    df_result['URL Mapeada'] = df_result['Query'].apply(lambda q: find_best_url_match(q, url_terms, unique_urls))
+    # Mapear cada query usando la columna 'query'
+    df_result['URL Mapeada'] = df_result['query'].apply(lambda q: find_best_url_match(q, url_terms, unique_urls))
     
-    # 3. Marcar GAP o Contenido Existente
-    # Si la URL Mapeada no es nula, significa que hay *alguna* URL en el sitio que responde
+    # Marcar GAP o Contenido Existente
     df_result['Score Contenido'] = df_result['URL Mapeada'].apply(lambda x: 2 if pd.notna(x) else 0)
     
     return df_result
 
 
 def suggest_url_for_gap(query: str, existing_urls: list) -> dict:
-    """Sugiere una estructura de URL para una query sin contenido (usando la lista de URLs existentes)."""
-    # Mantenemos la función de sugerencia original para mantener la coherencia
+    """Sugiere una estructura de URL para una query sin contenido."""
     terms = extract_terms(query)
     slug = '-'.join(terms[:5])
     
@@ -140,7 +135,7 @@ def suggest_url_for_gap(query: str, existing_urls: list) -> dict:
 def detect_patterns(df: pd.DataFrame) -> pd.DataFrame:
     """Detecta patrones conversacionales en las queries y asigna scores base."""
     df = df.copy()
-    df['Query Lower'] = df['Query'].str.lower()
+    df['Query Lower'] = df['query'].str.lower()
     df['Patrón'] = 'Otros'
     df['Tipo Intención'] = 'Indefinido'
     df['Fase Funnel'] = 'Indefinido'
@@ -163,10 +158,9 @@ def detect_patterns(df: pd.DataFrame) -> pd.DataFrame:
 
 def get_pattern_stats(df: pd.DataFrame) -> pd.DataFrame:
     """Genera estadísticas agregadas por patrón."""
-    # ... (Se mantiene la lógica original)
     stats = df.groupby('Patrón').agg({
-        'Query': 'count', 'Clicks': 'sum', 'Impresiones': 'sum',
-        'Score': 'mean', 'CTR': 'mean', 'Posición': 'mean'
+        'query': 'count', 'clicks': 'sum', 'impresiones': 'sum',
+        'Score': 'mean', 'ctr': 'mean', 'posición': 'mean'
     }).round(2)
     stats.columns = ['Queries', 'Total Clicks', 'Total Impresiones', 'Score Medio', 'CTR Medio', 'Posición Media']
     stats = stats.sort_values('Total Clicks', ascending=False)
@@ -183,39 +177,37 @@ def get_priority(score: float) -> str:
     return 'BAJA'
 
 def calculate_competition_score(position: pd.Series) -> pd.Series:
-    """
-    Mejora: Calcula score de competencia priorizando el 'Striking Distance' (4-20).
-    """
+    """Calcula score de competencia priorizando el 'Striking Distance' (4-20)."""
     def position_to_score(pos):
         if pd.isna(pos) or pos == 0:
             return 1 
         elif pos <= 3:
-            return 1 # Defensa
+            return 1 
         elif pos <= 20:
-            return 2 # ZONA DE ORO (Striking Distance)
+            return 2 
         elif pos <= 50:
-            return 1 # Oportunidad lejana
+            return 1 
         else:
-            return 0 # Irrelevante
+            return 0 
     return position.apply(position_to_score)
 
 def calculate_authority_score(df: pd.DataFrame) -> pd.Series:
     """Calcula score de autoridad temática basado en CTR y clicks."""
-    if 'CTR' not in df.columns or 'Clicks' not in df.columns:
+    if 'ctr' not in df.columns or 'clicks' not in df.columns:
         return pd.Series([1] * len(df))
 
     # Usar la mediana para medir el rendimiento medio
-    ctr_median = df['CTR'].median() if not df['CTR'].empty else 0
-    clicks_median = df['Clicks'].median() if not df['Clicks'].empty else 0
-    ctr_25 = df['CTR'].quantile(0.25) if not df['CTR'].empty else 0
-    clicks_25 = df['Clicks'].quantile(0.25) if not df['Clicks'].empty else 0
+    ctr_median = df['ctr'].median() if not df['ctr'].empty else 0
+    clicks_median = df['clicks'].median() if not df['clicks'].empty else 0
+    ctr_25 = df['ctr'].quantile(0.25) if not df['ctr'].empty else 0
+    clicks_25 = df['clicks'].quantile(0.25) if not df['clicks'].empty else 0
 
     def authority_to_score_median(row):
-        if row['CTR'] > ctr_median and row['Clicks'] > clicks_median:
-            return 2 # Alto rendimiento (Máxima autoridad)
-        elif row['CTR'] > ctr_25 or row['Clicks'] > clicks_25:
-            return 1 # Rendimiento medio
-        return 0 # Bajo rendimiento
+        if row['ctr'] > ctr_median and row['clicks'] > clicks_median:
+            return 2 
+        elif row['ctr'] > ctr_25 or row['clicks'] > clicks_25:
+            return 1 
+        return 0 
 
     return df.apply(authority_to_score_median, axis=1)
 
@@ -225,7 +217,7 @@ def calculate_score(df: pd.DataFrame, weights: dict = None) -> pd.DataFrame:
     df = df.copy()
     
     # Calcular scores dinámicos
-    df['Score Competencia'] = calculate_competition_score(df['Posición'])
+    df['Score Competencia'] = calculate_competition_score(df['posición'])
     df['Score Autoridad'] = calculate_authority_score(df)
     
     # Calcular score total ponderado
@@ -282,7 +274,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS personalizado (Se mantiene el estilo para prioridades)
+# CSS personalizado
 st.markdown("""
 <style>
     .main-header { font-size: 2.5rem; font-weight: 700; color: #1e293b; margin-bottom: 0.5rem; }
@@ -309,7 +301,6 @@ st.markdown('<p class="sub-header">Analiza queries combinadas de GSC y prioriza 
 with st.sidebar:
     st.header("📁 Cargar datos")
     
-    # --- CAMBIO CLAVE: UN SOLO UPLOADER ---
     combined_file = st.file_uploader("CSV de GSC (Consultas + Páginas)", type=['csv'], key="combined")
     
     st.divider()
@@ -326,18 +317,17 @@ with st.sidebar:
     st.divider()
     
     st.markdown("### 🧹 Limpieza")
-    # Filtro de marca (Mejora 3)
     marca_exclude = st.text_input("Excluir marca (separar por comas)", placeholder="miempresa, mi marca")
     
     st.divider()
     
     st.markdown("### ℹ️ Cómo usar")
-    st.info("Exporta tus datos de GSC seleccionando las dimensiones **Query** y **Page** para obtener un CSV que contenga: `Page, Query, Clicks, Impressions, CTR, Position`.")
+    st.info("Exporta tus datos de GSC seleccionando las dimensiones **Query** y **Page** para obtener un CSV que contenga: `Page, Query, Clicks, Impressions, CTR, Position` (o sus equivalentes en español/minúsculas).")
 
 # --- Funciones de Carga y Procesamiento ---
 
 def load_data_combined(file_uploader):
-    """Carga el CSV combinado, normaliza columnas y agrupa por Page/Query."""
+    """Carga el CSV combinado, normaliza columnas a minúsculas y agrupa."""
     if file_uploader is None: return None
     try:
         # Intento de lectura con utf-8 y luego latin-1
@@ -347,56 +337,59 @@ def load_data_combined(file_uploader):
             file_uploader.seek(0)
             df = pd.read_csv(file_uploader, encoding='latin-1')
         
-        # Normalizar nombres de columnas esperadas
-        column_mapping = {
-            'Top queries': 'Query', 'Consultas principales': 'Query', 
-            'Page': 'Page', 'Páginas principales': 'Page', 'URL': 'Page',
-            'Clicks': 'Clicks', 'Impresiones': 'Impresiones', 
-            'Position': 'Posición', 'Posición': 'Posición'
+        # --- SOLUCIÓN AL ERROR DE MINÚSCULAS ---
+        # 1. Convertir todas las columnas a minúsculas y normalizar espacios/acentos
+        df.columns = df.columns.str.lower().str.strip().str.replace(' ', '').str.replace('á', 'a').str.replace('ó', 'o').str.replace('í', 'i').str.replace('é', 'e').str.replace('ú', 'u')
+
+        # 2. Mapeo a los nombres estandarizados en minúsculas (ej: 'clics' a 'clicks')
+        column_mapping_to_standard = {
+            'consultasprincipales': 'query', 'topqueries': 'query',
+            'paginasprincipales': 'page', 'toppages': 'page', 'url': 'page',
+            'clics': 'clicks', 
+            'impresiones': 'impresiones', 
+            'posicion': 'posición', 'position': 'posición'
         }
-        df = df.rename(columns={k: v for k, v in column_mapping.items() if k in df.columns})
-        
-        # Filtrar para asegurar que tenemos las columnas mínimas
-        required_cols = ['Page', 'Query', 'Clicks', 'Impresiones', 'CTR', 'Posición']
+        df = df.rename(columns={k: v for k, v in column_mapping_to_standard.items() if k in df.columns})
+
+        # 3. Filtrar para asegurar que tenemos las columnas mínimas estandarizadas
+        required_cols = list(STANDARD_COLS)
         if not all(col in df.columns for col in required_cols):
             missing = [col for col in required_cols if col not in df.columns]
-            st.error(f"Faltan columnas requeridas en el CSV: {', '.join(missing)}. Asegúrate de incluir Page y Query.")
+            st.error(f"Faltan columnas requeridas en el CSV (después de normalizar a minúsculas): {', '.join(missing)}. Las columnas esperadas son: {', '.join(required_cols)}.")
             return None
 
         # Limpiar CTR
-        if df['CTR'].dtype == 'object':
-            df['CTR'] = df['CTR'].astype(str).str.replace('%', '').str.replace(',', '.').astype(float)
+        if df['ctr'].dtype == 'object':
+            df['ctr'] = df['ctr'].astype(str).str.replace('%', '').str.replace(',', '.').astype(float)
             
-        # Agrupar por Page y Query (GSC puede tener filas duplicadas en la exportación combinada)
-        df_grouped = df.groupby(['Page', 'Query']).agg({
-            'Clicks': 'sum',
-            'Impresiones': 'sum',
-            'CTR': 'mean',
-            'Posición': 'mean'
+        # Agrupar por Page y Query para sumar métricas (columnas en minúsculas)
+        df_grouped = df.groupby(['page', 'query']).agg({
+            'clicks': 'sum',
+            'impresiones': 'sum',
+            'ctr': 'mean',
+            'posición': 'mean'
         }).reset_index()
 
-        return df_grouped.fillna({'Clicks': 0, 'Impresiones': 0, 'Posición': 0, 'CTR': 0})
+        return df_grouped.fillna({'clicks': 0, 'impresiones': 0, 'posición': 0, 'ctr': 0})
         
     except Exception as e:
         st.error(f"Error al cargar el CSV combinado: {str(e)}")
         return None
 
 def full_processing_pipeline(df_raw, weights):
-    # 1. Detección de patrones
+    # 1. Detección de patrones (Usa la columna 'query')
     df = detect_patterns(df_raw)
     
-    # 2. Mapeo de URLs (Se auto-mapea contra las URLs de la columna 'Page')
+    # 2. Mapeo de URLs (Usa las columnas 'page' y 'query')
     df = match_urls_to_queries(df)
     
-    # 3. Cálculo de Scoring (Incluye la mejora de Striking Distance)
+    # 3. Cálculo de Scoring 
     df = calculate_score(df, weights)
     
     # 4. Asignar prioridad
     df['Prioridad'] = df['Score'].apply(get_priority)
     
     # 5. Marcar GAPs
-    # Un GAP es una Query para la que NO encontramos una URL mapeada, 
-    # incluso si esa query ya está en una página del CSV.
     df['Es GAP'] = df['Score Contenido'] == 0
     
     return df
@@ -419,7 +412,7 @@ if df_combined_raw is not None:
     if marca_exclude:
         terms = [t.strip().lower() for t in marca_exclude.split(',') if t.strip()]
         if terms:
-            mask = df_raw_processed['Query'].apply(lambda x: any(term in str(x).lower() for term in terms))
+            mask = df_raw_processed['query'].apply(lambda x: any(term in str(x).lower() for term in terms))
             df_processed = df_raw_processed[~mask].copy()
             st.sidebar.success(f"Se filtraron {mask.sum()} queries de marca.")
         else:
@@ -444,7 +437,7 @@ if st.session_state.df_processed is not None:
         with col2: st.metric("🔴 Críticas", len(df[df['Prioridad'] == 'CRÍTICA']))
         with col3: st.metric("🟠 Altas", len(df[df['Prioridad'] == 'ALTA']))
         with col4: st.metric("⚠️ GAPs", len(df[df['Es GAP'] == True]))
-        with col5: st.metric("Total Clicks", f"{df['Clicks'].sum():,}")
+        with col5: st.metric("Total Clicks", f"{df['clicks'].sum():,}") # Usamos 'clicks' en minúsculas
         
         st.divider()
         
@@ -473,20 +466,21 @@ if st.session_state.df_processed is not None:
                 st.plotly_chart(fig_patterns, use_container_width=True)
         
         st.markdown("### 🏆 Top 10 Queries por Score")
-        top_queries = df.nlargest(10, 'Score')[['Query', 'Page', 'Patrón', 'Score', 'Prioridad', 'Clicks', 'Impresiones', 'Posición']]
+        # Usamos columnas normalizadas para la visualización
+        top_queries = df.nlargest(10, 'Score')[['query', 'page', 'Patrón', 'Score', 'Prioridad', 'clicks', 'impresiones', 'posición']]
+        top_queries.columns = ['Query', 'Página', 'Patrón', 'Score', 'Prioridad', 'Clicks', 'Impresiones', 'Posición'] # Renombramos para la UI
         st.dataframe(
             top_queries, use_container_width=True, hide_index=True,
             column_config={
                 "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=10, format="%d"),
                 "Posición": st.column_config.NumberColumn("Posición", format="%.1f"),
-                "Page": st.column_config.LinkColumn("Página Asociada", display_text="Ver URL")
+                "Página": st.column_config.LinkColumn("Página Asociada", display_text="Ver URL")
             }
         )
 
     # TAB 2: Scoring
     with tab2:
         st.markdown("### 🎯 Tabla de Scoring Detallada")
-        st.markdown("Filtra y exporta tu lista de prioridades de contenido.")
         
         # Filtros
         col_f1, col_f2, col_f3 = st.columns([1,1,2])
@@ -497,48 +491,51 @@ if st.session_state.df_processed is not None:
         if pattern_filter != 'Todos':
             df_filtered = df_filtered[df_filtered['Patrón'] == pattern_filter]
             
+        # Columnas a mostrar (usando las normalizadas)
         df_display = df_filtered.sort_values('Score', ascending=False)[
-            ['Query', 'Patrón', 'Score', 'Prioridad', 'Clicks', 'Impresiones', 'Posición', 'Page', 'URL Mapeada', 'Es GAP']
+            ['query', 'Patrón', 'Score', 'Prioridad', 'clicks', 'impresiones', 'posición', 'page', 'URL Mapeada', 'Es GAP']
         ]
+        
+        # Renombramos para la UI
+        df_display.columns = ['Query', 'Patrón', 'Score', 'Prioridad', 'Clicks', 'Impresiones', 'Posición', 'Página Asociada', 'Mejor URL Sugerida', 'GAP']
 
         st.dataframe(
             df_display, use_container_width=True, height=500, hide_index=True,
             column_config={
                 "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=10, format="%d"),
                 "Posición": st.column_config.NumberColumn("Posición", format="%.1f"),
-                "Es GAP": st.column_config.CheckboxColumn("GAP"),
-                "Page": st.column_config.LinkColumn("Página Asociada", display_text="Ver URL"),
-                "URL Mapeada": st.column_config.LinkColumn("Mejor URL Sugerida", display_text="Ver URL")
+                "GAP": st.column_config.CheckboxColumn("GAP"),
+                "Página Asociada": st.column_config.LinkColumn("Página Asociada", display_text="Ver URL"),
+                "Mejor URL Sugerida": st.column_config.LinkColumn("Mejor URL Sugerida", display_text="Ver URL")
             }
         )
 
     # TAB 3: GAPs
     with tab3:
         st.markdown("### ⚠️ GAPs de Contenido")
-        st.markdown("Queries con alto potencial para las que **no se ha encontrado una URL relevante** en tu sitio (incluso entre tus páginas con rendimiento).")
         gaps_df = df[df['Es GAP'] == True].sort_values('Score', ascending=False)
         
         if len(gaps_df) > 0:
             col_g1, col_g2, col_g3 = st.columns(3)
             with col_g1: st.metric("GAPs Críticos", len(gaps_df[gaps_df['Prioridad'] == 'CRÍTICA']))
-            with col_g2: st.metric("Clicks en GAPs", f"{gaps_df['Clicks'].sum():,}")
-            with col_g3: st.metric("Impresiones en GAPs", f"{gaps_df['Impresiones'].sum():,}")
+            with col_g2: st.metric("Clicks en GAPs", f"{gaps_df['clicks'].sum():,}")
+            with col_g3: st.metric("Impresiones en GAPs", f"{gaps_df['impresiones'].sum():,}")
             st.divider()
 
             st.markdown("### 🔴 GAPs Prioritarios (Score ≥ 6)")
             gaps_prioritarios = gaps_df[gaps_df['Score'] >= 6]
             
             if len(gaps_prioritarios) > 0:
-                url_list = df['Page'].dropna().unique().tolist()
+                url_list = df['page'].dropna().unique().tolist()
                 
                 for _, row in gaps_prioritarios.head(10).iterrows():
-                    suggestion = suggest_url_for_gap(row['Query'], url_list)
-                    with st.expander(f"**{row['Query']}** - 🔴 Score: {row['Score']}", expanded=False):
+                    suggestion = suggest_url_for_gap(row['query'], url_list)
+                    with st.expander(f"**{row['query']}** - 🔴 Score: {row['Score']}", expanded=False):
                         st.markdown(f"""
                         - **Patrón detectado:** `{row.get('Patrón', 'N/A')}`
                         - **Prioridad:** **{row['Prioridad']}**
-                        - **Clicks potenciales:** {row['Clicks']:,}
-                        - **Posición media:** {row['Posición']:.1f}
+                        - **Clicks potenciales:** {row['clicks']:,}
+                        - **Posición media:** {row['posición']:.1f}
                         
                         **Acción sugerida:** Crear un nuevo contenido con la URL sugerida:
                         `{suggestion['full']}` (Slug: `{suggestion['slug']}`)
@@ -552,11 +549,9 @@ if st.session_state.df_processed is not None:
     with tab4:
         st.markdown("### 🔍 Análisis Detallado")
         
-        # N-GRAMS (Mejora 2)
+        # N-GRAMS
         st.divider()
         st.markdown("### 🧠 Detección de Temas (N-Grams)")
-        st.markdown("Frases más repetidas en las queries críticas (`CRÍTICA` o `ALTA`) que indican temas centrales.")
-        
         df_high_priority = df[df['Prioridad'].isin(['CRÍTICA', 'ALTA'])]
         
         if len(df_high_priority) > 50:
@@ -564,12 +559,12 @@ if st.session_state.df_processed is not None:
             
             with col_n1:
                 st.markdown("**Bigramas (2 palabras)**")
-                bigrams = get_ngrams(df_high_priority['Query'], n=2, top_k=15)
+                bigrams = get_ngrams(df_high_priority['query'], n=2, top_k=15)
                 st.dataframe(bigrams, use_container_width=True, hide_index=True)
                 
             with col_n2:
                 st.markdown("**Trigramas (3 palabras)**")
-                trigrams = get_ngrams(df_high_priority['Query'], n=3, top_k=15)
+                trigrams = get_ngrams(df_high_priority['query'], n=3, top_k=15)
                 st.dataframe(trigrams, use_container_width=True, hide_index=True)
         else:
             st.warning(f"Se necesitan más datos (mínimo 50 queries). Solo hay {len(df_high_priority)} en prioridad CRÍTICA/ALTA para este análisis.")
