@@ -52,14 +52,14 @@ def extract_terms(text: str) -> list:
         'articulos', 'blog', 'www', 'com', 'https', 'http', 'qué', 'cúal',
         'cuánto', 'cómo'
     }
-    terms = re.findall(r'\b[a-záéíóúñü]+\b', text.lower())
+    terms = re.findall(r'\b[a-záéíóúñü]+\b', str(text).lower())
     terms = [t for t in terms if t not in stopwords and len(t) > 2]
     return terms
 
 def extract_slug(url: str) -> str:
     """Extrae el slug de una URL."""
     try:
-        parsed = urlparse(url)
+        parsed = urlparse(str(url))
         path = parsed.path.rstrip('/')
         slug = path.split('/')[-1] if '/' in path else path
         slug = re.sub(r'\.[a-z]+$', '', slug)
@@ -328,11 +328,9 @@ with st.sidebar:
 
 # Usamos @st.cache_data para que si el archivo no cambia, el proceso sea instantáneo.
 @st.cache_data(show_spinner=False)
-def load_data_combined(file_uploader, progress_bar):
-    """Carga el CSV combinado, normaliza columnas, agrupa y actualiza progreso."""
+def load_data_combined(file_uploader):
+    """Carga el CSV combinado, normaliza columnas, agrupa y retorna el dataframe."""
     if file_uploader is None: return None
-    
-    progress_bar.progress(10, text="1/5: Leyendo CSV...")
     try:
         # Intento de lectura con utf-8 y luego latin-1
         try:
@@ -340,8 +338,6 @@ def load_data_combined(file_uploader, progress_bar):
         except:
             file_uploader.seek(0)
             df = pd.read_csv(file_uploader, encoding='latin-1')
-        
-        progress_bar.progress(25, text="2/5: Normalizando columnas...")
         
         # 1. Convertir todas las columnas a minúsculas y normalizar
         df.columns = df.columns.str.lower().str.strip().str.replace(' ', '').str.replace('á', 'a').str.replace('ó', 'o').str.replace('í', 'i').str.replace('é', 'e').str.replace('ú', 'u')
@@ -366,15 +362,12 @@ def load_data_combined(file_uploader, progress_bar):
         required_cols = list(STANDARD_COLS)
         if not all(col in df.columns for col in required_cols):
             missing = [col for col in required_cols if col not in df.columns]
-            st.error(f"Faltan columnas requeridas en el CSV (después de normalizar a minúsculas): {', '.join(missing)}. Las columnas esperadas son: {', '.join(required_cols)}.")
-            return None
+            raise ValueError(f"Faltan columnas requeridas en el CSV (después de normalizar a minúsculas): {', '.join(missing)}. Las columnas esperadas son: {', '.join(required_cols)}.")
 
         # Limpiar CTR
         if df['ctr'].dtype == 'object':
             df['ctr'] = df['ctr'].astype(str).str.replace('%', '').str.replace(',', '.').astype(float)
             
-        progress_bar.progress(40, text="3/5: Agrupando datos (esto puede tardar)...")
-        
         # Agrupar por Page y Query para sumar métricas (columnas en minúsculas)
         df_grouped = df.groupby(['page', 'query']).agg({
             'clicks': 'sum',
@@ -383,52 +376,61 @@ def load_data_combined(file_uploader, progress_bar):
             'posición': 'mean'
         }).reset_index()
 
-        progress_bar.progress(50, text="4/5: Limpieza final de datos...")
-        
         return df_grouped.fillna({'clicks': 0, 'impresiones': 0, 'posición': 0, 'ctr': 0})
         
     except Exception as e:
-        progress_bar.progress(100, text="Error")
-        st.error(f"Error al cargar el CSV combinado: {str(e)}")
-        return None
+        # Lanzamos la excepción para manejarla en el flujo principal
+        raise e
 
 # Usamos @st.cache_data para evitar recalcular si los datos de entrada y pesos no cambian.
 @st.cache_data(show_spinner=False)
-def full_processing_pipeline(df_raw, weights, progress_bar):
-    """Ejecuta toda la pipeline de procesamiento y scoring."""
-    
-    progress_bar.progress(55, text="5/5: 1/4 - Detectando patrones de intención...")
+def full_processing_pipeline(df_raw, weights):
+    """Ejecuta toda la pipeline de procesamiento y scoring (sin actualizar UI)."""
     # 1. Detección de patrones (Usa la columna 'query')
     df = detect_patterns(df_raw)
     
-    progress_bar.progress(70, text="5/5: 2/4 - Mapeando URLs y encontrando GAPs...")
     # 2. Mapeo de URLs (Usa las columnas 'page' y 'query')
     df = match_urls_to_queries(df)
     
-    progress_bar.progress(85, text="5/5: 3/4 - Calculando Score (Autoridad, Competencia)...")
     # 3. Cálculo de Scoring 
     df = calculate_score(df, weights)
     
-    progress_bar.progress(95, text="5/5: 4/4 - Asignando prioridades...")
     # 4. Asignar prioridad
     df['Prioridad'] = df['Score'].apply(get_priority)
     
     # 5. Marcar GAPs
     df['Es GAP'] = df['Score Contenido'] == 0
     
-    progress_bar.progress(100, text="Análisis completo.")
     return df
 
 # --- Bloque principal de carga y procesamiento ---
 
-# Placeholder para la barra de progreso
+# Placeholder para la barra de progreso y texto de estado
 progress_placeholder = st.empty()
-
-with progress_placeholder.container():
-    progress_bar = st.progress(0, text="Esperando la carga del archivo CSV...")
+status_text = st.empty()
+progress_bar = progress_placeholder.progress(0)
 
 # Cargar datos
-df_combined_raw = load_data_combined(combined_file, progress_bar)
+df_combined_raw = None
+try:
+    if combined_file is not None:
+        # Actualizar UI: inicio carga
+        progress_bar.progress(5)
+        status_text.text("1/3: Leyendo y normalizando CSV...")
+        df_combined_raw = load_data_combined(combined_file)
+        progress_bar.progress(40)
+        status_text.text("2/3: Agrupando y preparando datos...")
+        
+        # breve pausa lógica para reflejar cambios (no imprescindible)
+        progress_bar.progress(50)
+    else:
+        progress_bar.progress(0)
+        status_text.text("Esperando la carga del archivo CSV...")
+except Exception as e:
+    progress_bar.progress(100)
+    status_text.text("Error al cargar el CSV.")
+    st.error(f"Error al cargar el CSV combinado: {str(e)}")
+    df_combined_raw = None
 
 # Procesar datos si hay queries cargadas
 if df_combined_raw is not None:
@@ -439,25 +441,40 @@ if df_combined_raw is not None:
         'autoridad': peso_autoridad
     }
     
-    # Procesamiento completo con la misma barra de progreso
-    df_raw_processed = full_processing_pipeline(df_combined_raw, weights, progress_bar)
+    # Actualizar UI antes de procesar
+    progress_bar.progress(55)
+    status_text.text("Procesando: detectando patrones y calculando scores...")
+    
+    try:
+        df_raw_processed = full_processing_pipeline(df_combined_raw, weights)
+        progress_bar.progress(95)
+        status_text.text("Finalizando análisis...")
+    except Exception as e:
+        progress_bar.progress(100)
+        status_text.text("Error en el procesamiento.")
+        st.error(f"Error en la pipeline de procesamiento: {str(e)}")
+        df_raw_processed = None
     
     # LÓGICA DE FILTRADO DE MARCA
-    if marca_exclude:
-        terms = [t.strip().lower() for t in marca_exclude.split(',') if t.strip()]
-        if terms:
-            mask = df_raw_processed['query'].apply(lambda x: any(term in str(x).lower() for term in terms))
-            df_processed = df_raw_processed[~mask].copy()
-            st.sidebar.success(f"Se filtraron {mask.sum()} queries de marca.")
+    if df_raw_processed is not None:
+        if marca_exclude:
+            terms = [t.strip().lower() for t in marca_exclude.split(',') if t.strip()]
+            if terms:
+                mask = df_raw_processed['query'].apply(lambda x: any(term in str(x).lower() for term in terms))
+                df_processed = df_raw_processed[~mask].copy()
+                st.sidebar.success(f"Se filtraron {mask.sum()} queries de marca.")
+            else:
+                df_processed = df_raw_processed.copy()
         else:
             df_processed = df_raw_processed.copy()
-    else:
-        df_processed = df_raw_processed.copy()
 
-    st.session_state.df_processed = df_processed
-    
-    # Ocultar la barra de progreso al terminar
-    progress_placeholder.empty()
+        st.session_state.df_processed = df_processed
+        
+        # Ocultar la barra de progreso al terminar
+        progress_bar.progress(100)
+        status_text.text("Análisis completo.")
+        progress_placeholder.empty()
+        status_text.empty()
 
 # --- Visualización de resultados (El resto del código sigue igual) ---
 if st.session_state.df_processed is not None:
